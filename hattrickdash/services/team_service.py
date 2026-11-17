@@ -115,7 +115,14 @@ def get_league_table(league_id: int | None = None) -> list[dict]:
         params["leagueLevelUnitID"] = league_id
     raw = HattrickClient().fetch("leaguedetails", **params)
     data = xml_to_dict(raw)
-    teams = ensure_list(data.get("LeagueLevelUnit", {}).get("Teams", {}).get("Team") if isinstance(data.get("LeagueLevelUnit"), dict) else None)
+    # leaguedetails v1.2+ returns the <Team> elements directly under
+    # HattrickData; keep the old LeagueLevelUnit/Teams wrapper as fallback.
+    league_unit = data.get("LeagueLevelUnit")
+    teams = ensure_list(
+        data.get("Team")
+        or (league_unit.get("Teams", {}).get("Team")
+            if isinstance(league_unit, dict) else None)
+    )
     out = []
     for rank, t in enumerate(teams, start=1):
         out.append({

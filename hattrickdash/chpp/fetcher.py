@@ -899,6 +899,11 @@ def _get_youth_team_id(senior_team_id: int | None = None) -> int | None:
         senior_team_id = config.TEAM_ID
     for t in teams:
         if as_int(t.get("TeamID")) == senior_team_id:
+            # teamdetails v1.9 exposes YouthTeamID directly under <Team>.
+            ytid = as_int(t.get("YouthTeamID"))
+            if ytid and ytid > 0:
+                return ytid
+            # Older responses nested it under <YouthTeam>.
             yt = t.get("YouthTeam") or {}
             ytid = as_int(yt.get("YouthTeamID"))
             if ytid and ytid > 0:
@@ -913,9 +918,12 @@ def fetch_youth_team_details(youth_team_id: int | None = None) -> int:
     if not youth_team_id:
         log.info("Kein YouthTeam — Fetch übersprungen")
         return 0
+    # fetch() takes the query parameters as keyword arguments; the previous
+    # params={...} dict was sent as a single literal "params" query parameter,
+    # so CHPP never received youthTeamID/showScoutCall.
     raw = _client().fetch("youthteamdetails",
-                          params={"youthTeamID": str(youth_team_id),
-                                  "showScoutCall": "true"})
+                          youthTeamID=str(youth_team_id),
+                          showScoutCall="true")
     data = xml_to_dict(raw)
     yt = data.get("Team", {}) or data.get("YouthTeam", {}) or {}
     if not yt:
@@ -954,15 +962,18 @@ def fetch_youth_players(youth_team_id: int | None = None) -> int:
     if not youth_team_id:
         log.info("Kein YouthTeam — Fetch übersprungen")
         return 0
+    # Same kwargs contract as youthteamdetails; additionally ask for the v1.1
+    # response, which is the shape parsed below.
     raw = _client().fetch("youthplayerlist",
-                          params={"youthTeamID": str(youth_team_id),
-                                  "actions": "details,skills",
-                                  "showScoutCall": "true"})
+                          youthTeamID=str(youth_team_id),
+                          version="1.1",
+                          actionType="details",
+                          showScoutCall="true")
     data = xml_to_dict(raw)
     players = ensure_list(
-        (data.get("PlayerList") or data.get("Players") or {}).get("Player")
+        (data.get("PlayerList") or data.get("Players") or {}).get("YouthPlayer")
+        or (data.get("PlayerList") or data.get("Players") or {}).get("Player")
         or data.get("YouthPlayer")
-        or data.get("PlayerList")
     )
     # CHPP youthplayerlist liefert evtl. flache Liste unter "Player"
     if not players:
@@ -976,10 +987,24 @@ def fetch_youth_players(youth_team_id: int | None = None) -> int:
             if not ypid:
                 continue
 
-            # Skill-Werte: pro Skill gibt's Current + Max + ScoutCall
+            # v1.1 nests the skills under <PlayerSkills>. Values with XML
+            # attributes become {"#text": ...} in xml_to_dict, so unwrap them.
+            skills = p.get("PlayerSkills") or {}
+
+            def _skill_value(value: Any) -> int | None:
+                if isinstance(value, dict):
+                    return as_int(value.get("#text"))
+                return as_int(value)
+
             def _sk(prefix: str) -> tuple[int | None, int | None, bool]:
-                cur = as_int(p.get(f"{prefix}Skill") or p.get(f"{prefix}SkillLevel"))
-                mx  = as_int(p.get(f"{prefix}MaxLevel") or p.get(f"{prefix}SkillMax"))
+                cur = _skill_value(skills.get(f"{prefix}Skill")
+                                   or skills.get(f"{prefix}SkillLevel")
+                                   or p.get(f"{prefix}Skill")
+                                   or p.get(f"{prefix}SkillLevel"))
+                mx  = _skill_value(skills.get(f"{prefix}SkillMax")
+                                   or skills.get(f"{prefix}MaxLevel")
+                                   or p.get(f"{prefix}MaxLevel")
+                                   or p.get(f"{prefix}SkillMax"))
                 scouted = bool(mx is not None and mx > 0)
                 return cur, mx, scouted
 
@@ -1056,7 +1081,7 @@ def fetch_youth_players(youth_team_id: int | None = None) -> int:
 
 
 def fetch_youth_match_list(youth_team_id: int | None = None) -> int:
-    """Holt jüngste Jugend-Spiele (LeagueDetails-Variante)."""
+    """Holt jüngste Jugend-Spiele (matches; MatchList- und Matches-Variante)."""
     if youth_team_id is None:
         youth_team_id = _get_youth_team_id()
     if not youth_team_id:
@@ -1064,7 +1089,8 @@ def fetch_youth_match_list(youth_team_id: int | None = None) -> int:
     raw = _client().fetch("matches", isYouth="true", teamID=youth_team_id)
     data = xml_to_dict(raw)
     matches = ensure_list(
-        (data.get("Team") or {}).get("Matches", {}).get("Match")
+        (data.get("Team") or {}).get("MatchList", {}).get("Match")
+        or (data.get("Team") or {}).get("Matches", {}).get("Match")
         or data.get("Matches", {}).get("Match")
         or data.get("Match")
     )
